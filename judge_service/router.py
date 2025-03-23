@@ -52,6 +52,7 @@ async def run_submission(request: RunSubmissionRequest):
             output=result.get("stdout", ""),
             execution_time=result.get("time", 0),
             memory_used=result.get("memory", 0),
+            stderr=result.get("stderr", ""),
             expected_output=test_case["expected_output"]
         )
         

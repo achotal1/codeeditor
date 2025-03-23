@@ -33,6 +33,7 @@ class SubmissionResponse(BaseModel):
     status: str
     output: Optional[str] = None
     execution_time: Optional[float] = None
+    stderr: Optional[str] = None
     memory_used: Optional[float] = None
     test_results: Optional[List[TestResult]] = None
     passed: Optional[int] = None

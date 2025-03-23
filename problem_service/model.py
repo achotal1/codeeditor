@@ -38,15 +38,15 @@ problems = [
             }
         ],
         "constraints": [
-            "2 <= nums.length <= 10^4",
-            "-10^9 <= nums[i] <= 10^9"
-        ],
+              "2 <= nums.length <= 10^4",
+             "-10^9 <= nums[i] <= 10^9"
+            ],
         "test_cases": [
             {
-                "id": "two-sum-1",
-                "input": "[2,7,11,15]\n9",
-                "expected_output": "[0,1]"
-            }
+               "id": "two-sum-1",
+              "input": "2 7 11 15\n9",
+              "expected_output": "[0,1]"
+           }
         ],
         "templates": {
             "python": "def two_sum(nums, target):\n    pass"
