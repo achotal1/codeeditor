@@ -1,153 +1,179 @@
-from fastapi import APIRouter, HTTPException
-from .model import (
-    RunSubmissionRequest, 
-    SubmitSolutionRequest, 
-    SubmissionResponse, 
-    TestResult,
-    LANGUAGE_IDS
-)
-from .judge0_client import send_to_judge0, STATUS_MAP
-from problem_service.model import problems
-import uuid
+from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy.orm import Session
+from typing import List, Optional
+from . import models, judge0_client
+from .database import get_db
+from .model import SubmissionCreate, SubmissionResponse, SubmissionResult, TestCaseResult
+from problem_service import db_models as problem_models
 
-router = APIRouter(
-    prefix="/api/submissions",
-    tags=["submissions"],
-    responses={404: {"description": "Not found"}},
-)
+router = APIRouter(prefix="/api/submissions", tags=["submissions"])
 
-# In-memory submission storage (replace with a database in production)
-submissions = {}
-
-@router.post("/run", response_model=SubmissionResponse)
-async def run_submission(request: RunSubmissionRequest):
-    """Run code against a single test case."""
-    # Find problem
-    problem = next((p for p in problems if p["id"] == request.problem_id), None)
+@router.post("/run", response_model=SubmissionResult)
+async def run_submission(
+    submission: SubmissionCreate,
+    db: Session = Depends(get_db)
+):
+    """
+    Run code against a single test case
+    """
+    # Get the problem and test case
+    problem = db.query(problem_models.Problem).filter(problem_models.Problem.id == submission.problem_id).first()
     if not problem:
         raise HTTPException(status_code=404, detail="Problem not found")
     
-    # Find test case
-    test_case = next((tc for tc in problem["test_cases"] if tc["id"] == request.test_case_id), None)
+    test_case = db.query(problem_models.TestCase).filter(problem_models.TestCase.id == submission.test_case_id).first()
     if not test_case:
         raise HTTPException(status_code=404, detail="Test case not found")
     
-    # Get language ID
-    language_id = LANGUAGE_IDS.get(request.language)
-    if not language_id:
-        raise HTTPException(status_code=400, detail="Unsupported language")
+    # Create submission record
+    db_submission = models.Submission(
+        problem_id=submission.problem_id,
+        language=submission.language,
+        code=submission.code,
+        status="Running"
+    )
+    db.add(db_submission)
+    db.commit()
+    db.refresh(db_submission)
     
-    # Send to Judge0
     try:
-        result = await send_to_judge0(request.code, language_id, test_case["input"])
-        
-        # Get status
-        status = STATUS_MAP.get(result["status"]["id"], "Unknown")
-        
-        # Prepare response
-        submission_id = str(uuid.uuid4())
-        response = SubmissionResponse(
-            id=submission_id,
-            status=status,
-            output=result.get("stdout", ""),
-            execution_time=result.get("time", 0),
-            memory_used=result.get("memory", 0),
-            stderr=result.get("stderr", ""),
-            expected_output=test_case["expected_output"]
+        # Execute code using Judge0
+        result = await judge0_client.execute_code(
+            code=submission.code,
+            language=submission.language,
+            stdin=test_case.input,
+            expected_output=test_case.expected_output
         )
         
-        # Save submission to memory
-        submissions[submission_id] = {
-            "id": submission_id,
-            "problem_id": request.problem_id,
-            "language": request.language,
-            "code": request.code,
-            "status": status,
-            "created_at": str(uuid.uuid1()),
-            "execution_time": result.get("time", 0),
-            "memory_used": result.get("memory", 0),
-        }
+        # Update submission status
+        db_submission.status = result.status
+        db_submission.execution_time = result.execution_time
+        db_submission.memory_used = result.memory_used
+        db_submission.stdout = result.stdout
+        db_submission.stderr = result.stderr
+        db.commit()
         
-        return response
-    
+        return result
+        
     except Exception as e:
+        db_submission.status = "Error"
+        db_submission.stderr = str(e)
+        db.commit()
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/submit", response_model=SubmissionResponse)
-async def submit_solution(request: SubmitSolutionRequest):
-    """Submit solution to run against all test cases."""
-    # Find problem
-    problem = next((p for p in problems if p["id"] == request.problem_id), None)
+async def submit_solution(
+    submission: SubmissionCreate,
+    db: Session = Depends(get_db)
+):
+    """
+    Submit code for evaluation against all test cases
+    """
+    # Get the problem and its test cases
+    problem = db.query(problem_models.Problem).filter(problem_models.Problem.id == submission.problem_id).first()
     if not problem:
         raise HTTPException(status_code=404, detail="Problem not found")
     
-    # Get language ID
-    language_id = LANGUAGE_IDS.get(request.language)
-    if not language_id:
-        raise HTTPException(status_code=400, detail="Unsupported language")
+    test_cases = db.query(problem_models.TestCase).filter(problem_models.TestCase.problem_id == submission.problem_id).all()
+    if not test_cases:
+        raise HTTPException(status_code=404, detail="No test cases found for this problem")
     
-    # Run against each test case
-    test_results = []
+    # Create submission record
+    db_submission = models.Submission(
+        problem_id=submission.problem_id,
+        language=submission.language,
+        code=submission.code,
+        status="Running"
+    )
+    db.add(db_submission)
+    db.commit()
+    db.refresh(db_submission)
+    
+    results = []
     passed_count = 0
-    total_time = 0
-    max_memory = 0
     
-    for test_case in problem["test_cases"]:
-        try:
-            result = await send_to_judge0(request.code, language_id, test_case["input"])
+    try:
+        # Execute code against each test case
+        for test_case in test_cases:
+            result = await judge0_client.execute_code(
+                code=submission.code,
+                language=submission.language,
+                stdin=test_case.input,
+                expected_output=test_case.expected_output
+            )
             
-            output = result.get("stdout", "").strip()
-            expected_output = test_case["expected_output"].strip()
-            passed = (output == expected_output) and (result["status"]["id"] == 3)  # 3 = Accepted
-            
-            if passed:
+            if result.status == "Accepted":
                 passed_count += 1
-            
-            test_results.append(TestResult(
-                input=test_case["input"],
-                output=output,
-                expected_output=expected_output,
-                passed=passed
+                
+            results.append(TestCaseResult(
+                test_case_id=test_case.id,
+                status=result.status,
+                execution_time=result.execution_time,
+                memory_used=result.memory_used,
+                stdout=result.stdout,
+                stderr=result.stderr
             ))
-            
-            # Track resource usage
-            total_time += result.get("time", 0)
-            max_memory = max(max_memory, result.get("memory", 0))
-            
-        except Exception as e:
-            test_results.append(TestResult(
-                input=test_case["input"],
-                output=str(e),
-                expected_output=test_case["expected_output"],
-                passed=False
-            ))
+        
+        # Update submission status
+        db_submission.status = "Accepted" if passed_count == len(test_cases) else "Wrong Answer"
+        db_submission.execution_time = max(r.execution_time for r in results)
+        db_submission.memory_used = max(r.memory_used for r in results)
+        db_submission.passed_count = passed_count
+        db_submission.total_count = len(test_cases)
+        db.commit()
+        
+        return SubmissionResponse(
+            id=db_submission.id,
+            problem_id=db_submission.problem_id,
+            language=db_submission.language,
+            status=db_submission.status,
+            execution_time=db_submission.execution_time,
+            memory_used=db_submission.memory_used,
+            passed_count=db_submission.passed_count,
+            total_count=db_submission.total_count,
+            results=results
+        )
+        
+    except Exception as e:
+        db_submission.status = "Error"
+        db_submission.stderr = str(e)
+        db.commit()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/{submission_id}", response_model=SubmissionResponse)
+async def get_submission(
+    submission_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Get details of a specific submission
+    """
+    submission = db.query(models.Submission).filter(models.Submission.id == submission_id).first()
+    if not submission:
+        raise HTTPException(status_code=404, detail="Submission not found")
     
-    # Determine overall status
-    status = "Accepted" if passed_count == len(problem["test_cases"]) else "Wrong Answer"
+    # Get test case results
+    results = []
+    test_cases = db.query(problem_models.TestCase).filter(problem_models.TestCase.problem_id == submission.problem_id).all()
     
-    # Save submission
-    submission_id = str(uuid.uuid4())
-    submissions[submission_id] = {
-        "id": submission_id,
-        "problem_id": request.problem_id,
-        "language": request.language,
-        "code": request.code,
-        "status": status,
-        "created_at": str(uuid.uuid1()),
-        "passed_count": passed_count,
-        "total_count": len(problem["test_cases"]),
-        "execution_time": total_time / len(problem["test_cases"]) if len(problem["test_cases"]) > 0 else 0,
-        "memory_used": max_memory,
-    }
+    for test_case in test_cases:
+        results.append(TestCaseResult(
+            test_case_id=test_case.id,
+            status=submission.status,
+            execution_time=submission.execution_time,
+            memory_used=submission.memory_used,
+            stdout=submission.stdout,
+            stderr=submission.stderr
+        ))
     
-    # Prepare response
-    avg_time = total_time / len(problem["test_cases"]) if len(problem["test_cases"]) > 0 else 0
     return SubmissionResponse(
-        id=submission_id,
-        status=status,
-        test_results=test_results,
-        execution_time=avg_time,
-        memory_used=max_memory,
-        passed=passed_count,
-        total=len(problem["test_cases"])
+        id=submission.id,
+        problem_id=submission.problem_id,
+        language=submission.language,
+        status=submission.status,
+        execution_time=submission.execution_time,
+        memory_used=submission.memory_used,
+        passed_count=submission.passed_count,
+        total_count=submission.total_count,
+        results=results
     )

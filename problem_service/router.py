@@ -1,7 +1,9 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from typing import List
+from sqlalchemy.orm import Session
 
-from .model import problems
+from .model import Problem, ProblemCreate, get_problem, get_problems, create_problem
+from .database import get_db
 
 router = APIRouter(
     prefix="/api/problems",
@@ -9,23 +11,20 @@ router = APIRouter(
     responses={404: {"description": "Problem not found"}},
 )
 
-@router.get("/", response_model=List[dict])
-async def get_problems():
+@router.get("/", response_model=List[Problem])
+async def get_problems_list(db: Session = Depends(get_db)):
     """Get a list of all problems."""
-    return [
-        {
-            "id": problem["id"],
-            "title": problem["title"],
-            "difficulty": problem["difficulty"],
-            "acceptance_rate": problem["acceptance_rate"]
-        }
-        for problem in problems
-    ]
+    return get_problems(db)
 
-@router.get("/{problem_id}", response_model=dict)
-async def get_problem(problem_id: str):
+@router.get("/{problem_id}", response_model=Problem)
+async def get_problem_by_id(problem_id: str, db: Session = Depends(get_db)):
     """Get details of a specific problem."""
-    problem = next((p for p in problems if p["id"] == problem_id), None)
+    problem = get_problem(db, problem_id)
     if not problem:
         raise HTTPException(status_code=404, detail="Problem not found")
-    return problem 
+    return problem
+
+@router.post("/", response_model=Problem)
+async def create_new_problem(problem: ProblemCreate, db: Session = Depends(get_db)):
+    """Create a new problem."""
+    return create_problem(db, problem) 
