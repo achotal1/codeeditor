@@ -1,0 +1,4 @@
+{
+    "code": "def twoSum(nums, target):\n    seen = {}\n    for i, num in enumerate(nums):\n        complement = target - num\n        if complement in seen:\n            return [seen[complement], i]\n        seen[num] = i\n    return []\n\n# Test the function\nnums = [2, 7, 11, 15]\ntarget = 9\nprint(twoSum(nums, target))",
+    "language": "python"
+} 

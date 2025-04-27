@@ -5,6 +5,8 @@ from . import models, judge0_client
 from .database import get_db
 from .model import SubmissionCreate, SubmissionResponse, SubmissionResult, TestCaseResult
 from problem_service import db_models as problem_models
+import uuid
+from datetime import datetime
 
 router = APIRouter(prefix="/api/submissions", tags=["submissions"])
 
@@ -27,6 +29,7 @@ async def run_submission(
     
     # Create submission record
     db_submission = models.Submission(
+        id=str(uuid.uuid4()),
         problem_id=submission.problem_id,
         language=submission.language,
         code=submission.code,
@@ -80,6 +83,7 @@ async def submit_solution(
     
     # Create submission record
     db_submission = models.Submission(
+        id=str(uuid.uuid4()),
         problem_id=submission.problem_id,
         language=submission.language,
         code=submission.code,
